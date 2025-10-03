@@ -37,6 +37,27 @@ async function startWhatsApp() {
     if (qr) {
       // guarda QR como DataURL para servir na rota /qr
       lastQRDataURL = await qrcode.toDataURL(qr);
+
+      // envia QR para Supabase
+      if (supabase && DEFAULT_USER_ID) {
+        try {
+          await fetch(`${SUPABASE_URL}/functions/v1/whatsapp-connect`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${SUPABASE_KEY}`,
+            },
+            body: JSON.stringify({
+              user_id: DEFAULT_USER_ID,
+              qr_code: qr,
+              status: "connecting",
+            }),
+          });
+          console.log("QR enviado para Supabase");
+        } catch (e) {
+          console.error("Erro enviando QR para Supabase:", e);
+        }
+      }
     }
 
     if (connection === "open") {
@@ -44,6 +65,27 @@ async function startWhatsApp() {
       myJid = sock.user?.id || null;
       console.log("✅ WhatsApp conectado como:", myJid);
       lastQRDataURL = null; // limpa QR
+
+      // envia status conectado para Supabase
+      if (supabase && DEFAULT_USER_ID) {
+        try {
+          await fetch(`${SUPABASE_URL}/functions/v1/whatsapp-connect`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${SUPABASE_KEY}`,
+            },
+            body: JSON.stringify({
+              user_id: DEFAULT_USER_ID,
+              status: "connected",
+            }),
+          });
+          console.log("Status 'connected' enviado para Supabase");
+        } catch (e) {
+          console.error("Erro enviando status para Supabase:", e);
+        }
+      }
+
     } else if (connection === "close") {
       const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
       console.error("🔌 Conexão fechada. Reconnect?", shouldReconnect);
