@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 const SESSION_DIR = process.env.SESSION_DIR || "./sessions/default";
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
 const SUPABASE_KEY = process.env.SUPABASE_KEY || "";
-const DEFAULT_USER_ID = process.env.DEFAULT_USER_ID || null; // opcional para vincular agenda
+const DEFAULT_USER_ID = process.env.DEFAULT_USER_ID || "default";
 
 const supabase = (SUPABASE_URL && SUPABASE_KEY) ? createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
@@ -35,28 +35,17 @@ async function startWhatsApp() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      // guarda QR como DataURL para servir na rota /qr
       lastQRDataURL = await qrcode.toDataURL(qr);
+      console.log("🔹 QR gerado, enviando para Supabase...");
 
-      // envia QR para Supabase
-      if (supabase && DEFAULT_USER_ID) {
-        try {
-          await fetch(`${SUPABASE_URL}/functions/v1/whatsapp-connect`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${SUPABASE_KEY}`,
-            },
-            body: JSON.stringify({
-              user_id: DEFAULT_USER_ID,
-              qr_code: qr,
-              status: "connecting",
-            }),
-          });
-          console.log("QR enviado para Supabase");
-        } catch (e) {
-          console.error("Erro enviando QR para Supabase:", e);
-        }
+      if (supabase) {
+        const { error } = await supabase.from("sessões_do_whatsapp").upsert({
+          id_do_usuário: DEFAULT_USER_ID,
+          dados: { qr_code: qr, status: "connecting" },
+          atualização: new Date().toISOString()
+        });
+        if (error) console.error("❌ Erro ao salvar QR no Supabase:", error);
+        else console.log("✅ QR salvo no Supabase!");
       }
     }
 
@@ -64,42 +53,28 @@ async function startWhatsApp() {
       connectionStatus = "connected";
       myJid = sock.user?.id || null;
       console.log("✅ WhatsApp conectado como:", myJid);
-      lastQRDataURL = null; // limpa QR
+      lastQRDataURL = null;
 
-      // envia status conectado para Supabase
-      if (supabase && DEFAULT_USER_ID) {
-        try {
-          await fetch(`${SUPABASE_URL}/functions/v1/whatsapp-connect`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${SUPABASE_KEY}`,
-            },
-            body: JSON.stringify({
-              user_id: DEFAULT_USER_ID,
-              status: "connected",
-            }),
-          });
-          console.log("Status 'connected' enviado para Supabase");
-        } catch (e) {
-          console.error("Erro enviando status para Supabase:", e);
-        }
+      if (supabase) {
+        const { error } = await supabase.from("sessões_do_whatsapp").upsert({
+          id_do_usuário: DEFAULT_USER_ID,
+          dados: { status: "connected", jid: myJid },
+          atualização: new Date().toISOString()
+        });
+        if (error) console.error("❌ Erro ao salvar status:", error);
+        else console.log("✅ Status 'connected' salvo no Supabase!");
       }
-
     } else if (connection === "close") {
       const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
       console.error("🔌 Conexão fechada. Reconnect?", shouldReconnect);
       connectionStatus = "disconnected";
       myJid = null;
-      if (shouldReconnect) {
-        setTimeout(startWhatsApp, 2000);
-      }
+      if (shouldReconnect) setTimeout(startWhatsApp, 2000);
     } else if (connection === "connecting") {
       connectionStatus = "connecting";
     }
   });
 
-  // Recebe mensagens
   sock.ev.on("messages.upsert", async (m) => {
     const msg = m.messages?.[0];
     if (!msg || msg.key.fromMe) return;
@@ -108,13 +83,11 @@ async function startWhatsApp() {
     const text = msg.message?.conversation
       || msg.message?.extendedTextMessage?.text
       || msg.message?.imageMessage?.caption
-      || ""
+      || "";
 
     if (!text) return;
-
     console.log("📩", from, "→", text);
 
-    // Exemplo simples de agendamento
     if (text.toLowerCase().startsWith("agendar")) {
       const payload = {
         user_id: DEFAULT_USER_ID,
@@ -125,24 +98,18 @@ async function startWhatsApp() {
         status: "pending",
         source: "whatsapp"
       };
-      if (supabase && DEFAULT_USER_ID) {
-        try {
-          const { error } = await supabase.from("agenda").insert([payload]);
-          if (error) console.error("Erro ao salvar no Supabase:", error);
-        } catch (e) {
-          console.error("Exceção Supabase:", e);
-        }
+      if (supabase) {
+        const { error } = await supabase.from("agenda").insert([payload]);
+        if (error) console.error("Erro ao salvar no Supabase:", error);
       }
       await sock.sendMessage(from, { text: "✅ Recebi seu pedido de agendamento! Em breve confirmo o horário. " });
       return;
     }
 
-    // Resposta padrão
     await sock.sendMessage(from, { text: "Olá! Sou a atendente virtual. Envie: agendar <detalhes> 📅" });
   });
 }
 
-// Rotas HTTP
 app.get("/", (_req, res) => {
   res.type("html").send(`
     <html>
@@ -151,25 +118,20 @@ app.get("/", (_req, res) => {
         <h1>WhatsApp Bot — Baileys</h1>
         <p>Status: <b>${connectionStatus}</b></p>
         <p>Meu JID: <code>${myJid ?? "-"}</code></p>
-        <p><a href="/qr">Abrir QR Code</a> (se estiver desconectado)</p>
+        <p><a href="/qr">Abrir QR Code</a></p>
       </body>
     </html>
   `);
 });
 
-// Página do QR que atualiza a cada 5s
 app.get("/qr", (_req, res) => {
-  const img = lastQRDataURL ? `<img src="${lastQRDataURL}" style="max-width:360px;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.15)" />`
-                            : `<p>Nenhum QR disponível. Talvez já esteja conectado.</p>`;
+  const img = lastQRDataURL
+    ? `<img src="${lastQRDataURL}" style="max-width:360px;border-radius:12px;box-shadow:0 6px 24px rgba(0,0,0,.15)" />`
+    : `<p>Nenhum QR disponível. Talvez já esteja conectado.</p>`;
   res.type("html").send(`
     <html>
-      <head>
-        <meta charset="utf-8" />
-        <meta http-equiv="refresh" content="5">
-        <title>QR Code – WhatsApp</title>
-        <style>body{font-family:system-ui;display:grid;place-items:center;height:100vh}</style>
-      </head>
-      <body>
+      <head><meta charset="utf-8" /><meta http-equiv="refresh" content="5"><title>QR Code – WhatsApp</title></head>
+      <body style="font-family:system-ui;display:grid;place-items:center;height:100vh">
         ${img}
         <p style="color:#666">Atualiza automaticamente a cada 5s</p>
         <a href="/">Voltar</a>
@@ -178,7 +140,6 @@ app.get("/qr", (_req, res) => {
   `);
 });
 
-// Envio de mensagem de teste
 app.post("/send", async (req, res) => {
   try {
     const { to, message } = req.body;
@@ -192,11 +153,6 @@ app.post("/send", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`HTTP server on :${PORT}`);
-});
+app.listen(PORT, () => console.log(`HTTP server on :${PORT}`));
 
-// start
-startWhatsApp().catch(err => {
-  console.error("Falha ao iniciar WhatsApp:", err);
-});
+startWhatsApp().catch(err => console.error("Falha ao iniciar WhatsApp:", err));
