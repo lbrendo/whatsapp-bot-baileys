@@ -34,6 +34,7 @@ async function startWhatsApp() {
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
+    // 🔹 Quando o QR for gerado
     if (qr) {
       lastQRDataURL = await qrcode.toDataURL(qr);
       console.log("🔹 QR gerado, enviando para Supabase...");
@@ -41,7 +42,8 @@ async function startWhatsApp() {
       if (supabase) {
         const { error } = await supabase.from("sessões_do_whatsapp").upsert({
           id_do_usuário: DEFAULT_USER_ID,
-          dados: { qr_code: qr, status: "connecting" },
+          qr_code: qr,
+          status: "connecting",
           atualização: new Date().toISOString()
         });
         if (error) console.error("❌ Erro ao salvar QR no Supabase:", error);
@@ -49,32 +51,52 @@ async function startWhatsApp() {
       }
     }
 
+    // ✅ Quando a conexão for aberta
     if (connection === "open") {
       connectionStatus = "connected";
       myJid = sock.user?.id || null;
+      const phoneNumber = myJid?.split("@")[0]?.replace(/\D/g, "") || null;
       console.log("✅ WhatsApp conectado como:", myJid);
       lastQRDataURL = null;
 
       if (supabase) {
         const { error } = await supabase.from("sessões_do_whatsapp").upsert({
           id_do_usuário: DEFAULT_USER_ID,
-          dados: { status: "connected", jid: myJid },
+          status: "connected",
+          jid: myJid,
+          número: phoneNumber,
           atualização: new Date().toISOString()
         });
         if (error) console.error("❌ Erro ao salvar status:", error);
-        else console.log("✅ Status 'connected' salvo no Supabase!");
+        else console.log(`✅ Status 'connected' salvo no Supabase! Número: ${phoneNumber}`);
       }
-    } else if (connection === "close") {
+    }
+
+    // 🔌 Quando a conexão for fechada
+    else if (connection === "close") {
       const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
       console.error("🔌 Conexão fechada. Reconnect?", shouldReconnect);
       connectionStatus = "disconnected";
       myJid = null;
+
+      if (supabase) {
+        const { error } = await supabase.from("sessões_do_whatsapp").upsert({
+          id_do_usuário: DEFAULT_USER_ID,
+          status: "disconnected",
+          atualização: new Date().toISOString()
+        });
+        if (error) console.error("Erro ao atualizar status no Supabase:", error);
+      }
+
       if (shouldReconnect) setTimeout(startWhatsApp, 2000);
-    } else if (connection === "connecting") {
+    }
+
+    else if (connection === "connecting") {
       connectionStatus = "connecting";
     }
   });
 
+  // 📩 Receber mensagens
   sock.ev.on("messages.upsert", async (m) => {
     const msg = m.messages?.[0];
     if (!msg || msg.key.fromMe) return;
@@ -110,6 +132,7 @@ async function startWhatsApp() {
   });
 }
 
+// 🌐 Rotas HTTP básicas
 app.get("/", (_req, res) => {
   res.type("html").send(`
     <html>
@@ -140,6 +163,7 @@ app.get("/qr", (_req, res) => {
   `);
 });
 
+// 📤 Enviar mensagens manualmente via POST
 app.post("/send", async (req, res) => {
   try {
     const { to, message } = req.body;
